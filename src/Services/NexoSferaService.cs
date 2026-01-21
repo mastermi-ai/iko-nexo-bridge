@@ -154,7 +154,7 @@ public class NexoSferaService : IDisposable
             {
                 var kontrahent = _sesja.Kontrahenci.Dane
                     .FirstOrDefault(k => k.Id.ToString() == order.Customer.NexoId);
-                
+
                 if (kontrahent != null)
                 {
                     dokumentHandlowy.Kontrahent = kontrahent;
@@ -274,7 +274,7 @@ public class NexoSferaService : IDisposable
 
             // === IMPLEMENTACJA SQL (bezpośrednia) ===
             var query = @"
-                SELECT 
+                SELECT
                     t.tw_Id AS Id,
                     t.tw_Symbol AS Code,
                     t.tw_Nazwa AS Name,
@@ -362,7 +362,7 @@ public class NexoSferaService : IDisposable
 
             // === IMPLEMENTACJA SQL (bezpośrednia) ===
             var query = @"
-                SELECT 
+                SELECT
                     k.kh_Id AS Id,
                     k.kh_Nazwa AS Name,
                     k.kh_NazwaSkrocona AS ShortName,
@@ -415,6 +415,242 @@ public class NexoSferaService : IDisposable
     /// Test connection status
     /// </summary>
     public bool IsConnected => _isConnected && (_sqlConnection?.State == System.Data.ConnectionState.Open);
+
+    // ========================================================================
+    // ROZRACHUNKI (WYMAGANIE KLIENTA)
+    // ========================================================================
+
+    /// <summary>
+    /// Pobiera saldo należności klienta z nexo PRO
+    /// Wartość dodatnia = klient jest winien firmie
+    /// </summary>
+    public async Task<CustomerBalance?> GetCustomerBalanceAsync(
+        string nexoId,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_isConnected || _sqlConnection == null)
+        {
+            _logger.LogWarning("Cannot get customer balance - not connected to nexo PRO");
+            return null;
+        }
+
+        try
+        {
+            _logger.LogDebug("Fetching balance for customer {NexoId}", nexoId);
+
+            // Query dla salda rozrachunków z nexo PRO
+            // Tabela rk__Rozrachunek zawiera należności/zobowiązania
+            var query = @"
+                SELECT 
+                    k.kh_Id,
+                    k.kh_Nazwa,
+                    k.kh_LimitKredytowy AS CreditLimit,
+                    ISNULL(SUM(CASE 
+                        WHEN r.rk_Typ = 'N' THEN r.rk_KwotaPozostala  -- Należność
+                        WHEN r.rk_Typ = 'Z' THEN -r.rk_KwotaPozostala -- Zobowiązanie
+                        ELSE 0 
+                    END), 0) AS Balance
+                FROM kh__Kontrahent k
+                LEFT JOIN rk__Rozrachunek r ON k.kh_Id = r.rk_IdKontrahenta 
+                    AND r.rk_KwotaPozostala > 0
+                WHERE k.kh_Id = @NexoId
+                GROUP BY k.kh_Id, k.kh_Nazwa, k.kh_LimitKredytowy";
+
+            using var command = new SqlCommand(query, _sqlConnection);
+            command.Parameters.AddWithValue("@NexoId", int.Parse(nexoId));
+
+            using var reader = await command.ExecuteReaderAsync(cancellationToken);
+
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                return new CustomerBalance
+                {
+                    NexoId = nexoId,
+                    Balance = Convert.ToDecimal(reader["Balance"]),
+                    CreditLimit = reader["CreditLimit"] != DBNull.Value 
+                        ? Convert.ToDecimal(reader["CreditLimit"]) 
+                        : null,
+                    UpdatedAt = DateTime.UtcNow
+                };
+            }
+
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to fetch balance for customer {NexoId}", nexoId);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Pobiera salda wszystkich klientów (batch)
+    /// </summary>
+    public async Task<List<CustomerBalance>> GetAllCustomerBalancesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var balances = new List<CustomerBalance>();
+
+        if (!_isConnected || _sqlConnection == null)
+        {
+            _logger.LogWarning("Cannot get customer balances - not connected to nexo PRO");
+            return balances;
+        }
+
+        try
+        {
+            _logger.LogInformation("Fetching all customer balances from nexo PRO");
+
+            var query = @"
+                SELECT 
+                    k.kh_Id AS NexoId,
+                    k.kh_LimitKredytowy AS CreditLimit,
+                    ISNULL(SUM(CASE 
+                        WHEN r.rk_Typ = 'N' THEN r.rk_KwotaPozostala
+                        WHEN r.rk_Typ = 'Z' THEN -r.rk_KwotaPozostala
+                        ELSE 0 
+                    END), 0) AS Balance
+                FROM kh__Kontrahent k
+                LEFT JOIN rk__Rozrachunek r ON k.kh_Id = r.rk_IdKontrahenta 
+                    AND r.rk_KwotaPozostala > 0
+                WHERE k.kh_Aktywny = 1
+                GROUP BY k.kh_Id, k.kh_LimitKredytowy";
+
+            using var command = new SqlCommand(query, _sqlConnection);
+            using var reader = await command.ExecuteReaderAsync(cancellationToken);
+
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                balances.Add(new CustomerBalance
+                {
+                    NexoId = reader["NexoId"].ToString()!,
+                    Balance = Convert.ToDecimal(reader["Balance"]),
+                    CreditLimit = reader["CreditLimit"] != DBNull.Value 
+                        ? Convert.ToDecimal(reader["CreditLimit"]) 
+                        : null,
+                    UpdatedAt = DateTime.UtcNow
+                });
+            }
+
+            _logger.LogInformation("Fetched balances for {Count} customers", balances.Count);
+            return balances;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to fetch customer balances");
+            return balances;
+        }
+    }
+
+    // ========================================================================
+    // ZDJĘCIA PRODUKTÓW (WYMAGANIE KLIENTA - z cache!)
+    // ========================================================================
+
+    /// <summary>
+    /// Pobiera zdjęcie produktu z nexo PRO jako Base64
+    /// UWAGA: Klient martwi się o wydajność - używaj z cache'owaniem!
+    /// </summary>
+    public async Task<ProductImage?> GetProductImageAsync(
+        string nexoId,
+        int maxWidth = 200,
+        int maxHeight = 200,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_isConnected || _sqlConnection == null)
+        {
+            _logger.LogWarning("Cannot get product image - not connected to nexo PRO");
+            return null;
+        }
+
+        try
+        {
+            _logger.LogDebug("Fetching image for product {NexoId}", nexoId);
+
+            // Zdjęcia w nexo są przechowywane w tabeli ob__Obiekt (BLOB)
+            // lub w osobnej tabeli zdjęć produktów
+            var query = @"
+                SELECT 
+                    t.tw_Id,
+                    z.zdj_Dane AS ImageData,
+                    z.zdj_TypMIME AS MimeType
+                FROM tw__Towar t
+                INNER JOIN zdj__Zdjecie z ON t.tw_IdZdjeciaPodstawowego = z.zdj_Id
+                WHERE t.tw_Id = @NexoId";
+
+            using var command = new SqlCommand(query, _sqlConnection);
+            command.Parameters.AddWithValue("@NexoId", int.Parse(nexoId));
+
+            using var reader = await command.ExecuteReaderAsync(cancellationToken);
+
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                var imageData = reader["ImageData"] as byte[];
+                var mimeType = reader["MimeType"]?.ToString() ?? "image/jpeg";
+
+                if (imageData != null && imageData.Length > 0)
+                {
+                    // Dla wydajności: w produkcji użyj biblioteki do resize (np. ImageSharp)
+                    // Tu zwracamy oryginał jako base64
+                    var base64 = Convert.ToBase64String(imageData);
+
+                    return new ProductImage
+                    {
+                        NexoId = nexoId,
+                        Base64Data = base64,
+                        MimeType = mimeType,
+                        FetchedAt = DateTime.UtcNow
+                    };
+                }
+            }
+
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to fetch image for product {NexoId}", nexoId);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Pobiera listę produktów które mają zdjęcia (do sync)
+    /// </summary>
+    public async Task<List<string>> GetProductsWithImagesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var productIds = new List<string>();
+
+        if (!_isConnected || _sqlConnection == null)
+        {
+            _logger.LogWarning("Cannot check product images - not connected to nexo PRO");
+            return productIds;
+        }
+
+        try
+        {
+            var query = @"
+                SELECT t.tw_Id
+                FROM tw__Towar t
+                WHERE t.tw_IdZdjeciaPodstawowego IS NOT NULL
+                  AND t.tw_Aktywny = 1";
+
+            using var command = new SqlCommand(query, _sqlConnection);
+            using var reader = await command.ExecuteReaderAsync(cancellationToken);
+
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                productIds.Add(reader["tw_Id"].ToString()!);
+            }
+
+            _logger.LogInformation("Found {Count} products with images", productIds.Count);
+            return productIds;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to check product images");
+            return productIds;
+        }
+    }
 
     /// <summary>
     /// Disconnect from nexo PRO

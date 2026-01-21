@@ -123,7 +123,7 @@ dotnet publish -c Release -o ./publish --self-contained false
       "Microsoft.Hosting.Lifetime": "Information"
     }
   },
-  
+
   "CloudApi": {
     "BaseUrl": "https://TWOJ-SERWER.com",
     "ApiKey": "TWOJ-KLUCZ-API-DLA-BRIDGE",
@@ -131,7 +131,7 @@ dotnet publish -c Release -o ./publish --self-contained false
     "PollingIntervalSeconds": 30,
     "RequestTimeoutSeconds": 60
   },
-  
+
   "NexoPro": {
     "ServerName": "NAZWA-SERWERA-SQL\\NEXO",
     "DatabaseName": "NexoPRO",
@@ -140,7 +140,7 @@ dotnet publish -c Release -o ./publish --self-contained false
     "OperatorSymbol": "ADMIN",
     "OperatorPassword": "haslo_operatora"
   },
-  
+
   "Sync": {
     "SyncOrdersEnabled": true,
     "SyncProductsEnabled": true,
