@@ -441,17 +441,17 @@ public class NexoSferaService : IDisposable
             // Query dla salda rozrachunków z nexo PRO
             // Tabela rk__Rozrachunek zawiera należności/zobowiązania
             var query = @"
-                SELECT 
+                SELECT
                     k.kh_Id,
                     k.kh_Nazwa,
                     k.kh_LimitKredytowy AS CreditLimit,
-                    ISNULL(SUM(CASE 
+                    ISNULL(SUM(CASE
                         WHEN r.rk_Typ = 'N' THEN r.rk_KwotaPozostala  -- Należność
                         WHEN r.rk_Typ = 'Z' THEN -r.rk_KwotaPozostala -- Zobowiązanie
-                        ELSE 0 
+                        ELSE 0
                     END), 0) AS Balance
                 FROM kh__Kontrahent k
-                LEFT JOIN rk__Rozrachunek r ON k.kh_Id = r.rk_IdKontrahenta 
+                LEFT JOIN rk__Rozrachunek r ON k.kh_Id = r.rk_IdKontrahenta
                     AND r.rk_KwotaPozostala > 0
                 WHERE k.kh_Id = @NexoId
                 GROUP BY k.kh_Id, k.kh_Nazwa, k.kh_LimitKredytowy";
@@ -467,8 +467,8 @@ public class NexoSferaService : IDisposable
                 {
                     NexoId = nexoId,
                     Balance = Convert.ToDecimal(reader["Balance"]),
-                    CreditLimit = reader["CreditLimit"] != DBNull.Value 
-                        ? Convert.ToDecimal(reader["CreditLimit"]) 
+                    CreditLimit = reader["CreditLimit"] != DBNull.Value
+                        ? Convert.ToDecimal(reader["CreditLimit"])
                         : null,
                     UpdatedAt = DateTime.UtcNow
                 };
@@ -502,16 +502,16 @@ public class NexoSferaService : IDisposable
             _logger.LogInformation("Fetching all customer balances from nexo PRO");
 
             var query = @"
-                SELECT 
+                SELECT
                     k.kh_Id AS NexoId,
                     k.kh_LimitKredytowy AS CreditLimit,
-                    ISNULL(SUM(CASE 
+                    ISNULL(SUM(CASE
                         WHEN r.rk_Typ = 'N' THEN r.rk_KwotaPozostala
                         WHEN r.rk_Typ = 'Z' THEN -r.rk_KwotaPozostala
-                        ELSE 0 
+                        ELSE 0
                     END), 0) AS Balance
                 FROM kh__Kontrahent k
-                LEFT JOIN rk__Rozrachunek r ON k.kh_Id = r.rk_IdKontrahenta 
+                LEFT JOIN rk__Rozrachunek r ON k.kh_Id = r.rk_IdKontrahenta
                     AND r.rk_KwotaPozostala > 0
                 WHERE k.kh_Aktywny = 1
                 GROUP BY k.kh_Id, k.kh_LimitKredytowy";
@@ -525,8 +525,8 @@ public class NexoSferaService : IDisposable
                 {
                     NexoId = reader["NexoId"].ToString()!,
                     Balance = Convert.ToDecimal(reader["Balance"]),
-                    CreditLimit = reader["CreditLimit"] != DBNull.Value 
-                        ? Convert.ToDecimal(reader["CreditLimit"]) 
+                    CreditLimit = reader["CreditLimit"] != DBNull.Value
+                        ? Convert.ToDecimal(reader["CreditLimit"])
                         : null,
                     UpdatedAt = DateTime.UtcNow
                 });
@@ -569,7 +569,7 @@ public class NexoSferaService : IDisposable
             // Zdjęcia w nexo są przechowywane w tabeli ob__Obiekt (BLOB)
             // lub w osobnej tabeli zdjęć produktów
             var query = @"
-                SELECT 
+                SELECT
                     t.tw_Id,
                     z.zdj_Dane AS ImageData,
                     z.zdj_TypMIME AS MimeType
