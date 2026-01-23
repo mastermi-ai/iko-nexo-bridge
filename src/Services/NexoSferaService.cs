@@ -124,7 +124,16 @@ public class NexoSferaService : IDisposable
     }
 
     /// <summary>
-    /// Create order document (Zamówienie od Odbiorcy - ZO) in nexo PRO
+    /// Create order document (Zamówienie od Klienta - ZK) in nexo PRO
+    /// 
+    /// TRYBY PRACY:
+    /// 1. USE_SFERA = true  → Pełna integracja przez Sfera SDK (produkcja)
+    /// 2. USE_SFERA = false → Tryb testowy bez tworzenia dokumentów
+    /// 
+    /// Aby włączyć Sfera SDK:
+    /// 1. Znajdź Sfera.dll w instalacji nexo PRO
+    /// 2. Dodaj referencję: dotnet add reference "ścieżka/do/Sfera.dll"
+    /// 3. Zmień USE_SFERA na true w .csproj lub tutaj
     /// </summary>
     public async Task<OrderProcessingResult> CreateOrderDocumentAsync(
         CloudOrder order,
@@ -140,42 +149,59 @@ public class NexoSferaService : IDisposable
 
         try
         {
-            _logger.LogInformation("Creating order document for order #{OrderId}", order.Id);
+            _logger.LogInformation("Creating ZK document for order #{OrderId}, Customer: {Customer}", 
+                order.Id, order.Customer?.Name ?? "NOWY KLIENT");
 
-            // === IMPLEMENTACJA SFERA SDK ===
-            // Odkomentuj po dodaniu referencji do Sfera.dll:
-            /*
-            // Utwórz nowy dokument ZO (Zamówienie od Odbiorcy)
-            using var dokumentHandlowy = _sesja!.DokumentyHandlowe.Utworz(
-                Sfera.Model.Enums.TypDokumentuHandlowego.ZamowienieOdOdbiorcy);
+#if USE_SFERA
+            // ═══════════════════════════════════════════════════════════════
+            // TRYB PRODUKCYJNY - SFERA SDK
+            // ═══════════════════════════════════════════════════════════════
+            
+            if (_sesja == null)
+            {
+                result.ErrorMessage = "Sfera session not initialized";
+                return result;
+            }
 
-            // Ustaw kontrahenta
+            // Utwórz nowy dokument ZK (Zamówienie od Klienta)
+            using var dokumentHandlowy = _sesja.DokumentyHandlowe.Utworz(
+                Sfera.Model.Enums.TypDokumentuHandlowego.ZamowienieOdKlienta);
+
+            // === KONTRAHENT ===
             if (!string.IsNullOrEmpty(order.Customer?.NexoId))
             {
+                // Istniejący klient - znajdź po ID
                 var kontrahent = _sesja.Kontrahenci.Dane
                     .FirstOrDefault(k => k.Id.ToString() == order.Customer.NexoId);
 
                 if (kontrahent != null)
                 {
                     dokumentHandlowy.Kontrahent = kontrahent;
+                    _logger.LogDebug("Set customer: {Name} (ID: {Id})", kontrahent.Nazwa, kontrahent.Id);
                 }
                 else
                 {
-                    _logger.LogWarning("Customer not found in nexo: {NexoId}", order.Customer.NexoId);
+                    _logger.LogWarning("Customer not found in nexo: {NexoId}, using notes", order.Customer.NexoId);
                 }
             }
+            else
+            {
+                // NOWY KLIENT - dane w uwagach (wymaganie klienta!)
+                _logger.LogInformation("New customer - data will be in notes");
+            }
 
-            // Ustaw daty
+            // === DATY ===
             dokumentHandlowy.DataWystawienia = order.OrderDate;
-            dokumentHandlowy.DataSprzedazy = order.OrderDate;
+            dokumentHandlowy.DataRealizacji = order.OrderDate.AddDays(7); // Domyślnie +7 dni
 
-            // Ustaw uwagi
+            // === UWAGI (zawierają dane nowego klienta jeśli applicable) ===
             if (!string.IsNullOrEmpty(order.Notes))
             {
                 dokumentHandlowy.Uwagi = order.Notes;
+                _logger.LogDebug("Set notes: {Notes}", order.Notes.Substring(0, Math.Min(100, order.Notes.Length)));
             }
 
-            // Dodaj pozycje
+            // === POZYCJE ===
             foreach (var item in order.Items)
             {
                 var towar = _sesja.Towary.Dane
@@ -185,17 +211,17 @@ public class NexoSferaService : IDisposable
                 {
                     var pozycja = dokumentHandlowy.Pozycje.Dodaj(towar);
                     pozycja.Ilosc = item.Quantity;
+                    
+                    // Cena półkowa - nexo przeliczy rabaty automatycznie!
+                    // (wymaganie klienta: kalkulacja cen w nexo, nie w aplikacji)
                     pozycja.CenaNetto = item.PriceNetto;
-
-                    if (item.Discount.HasValue && item.Discount > 0)
-                    {
-                        pozycja.Rabat = item.Discount.Value;
-                    }
 
                     if (!string.IsNullOrEmpty(item.Notes))
                     {
                         pozycja.Uwagi = item.Notes;
                     }
+
+                    _logger.LogDebug("Added item: {Code} x {Qty}", item.ProductCode, item.Quantity);
                 }
                 else
                 {
@@ -203,7 +229,10 @@ public class NexoSferaService : IDisposable
                 }
             }
 
-            // Zapisz dokument
+            // === PRZELICZ DOKUMENT (nexo oblicza rabaty!) ===
+            dokumentHandlowy.Przelicz();
+
+            // === ZAPISZ ===
             dokumentHandlowy.Zapisz();
 
             result.Success = true;
@@ -211,25 +240,33 @@ public class NexoSferaService : IDisposable
             result.NexoDocNumber = dokumentHandlowy.NumerPelny;
 
             _logger.LogInformation(
-                "Created document {DocNumber} (ID: {DocId}) for order #{OrderId}",
+                "✅ Created ZK {DocNumber} (ID: {DocId}) for order #{OrderId}",
                 result.NexoDocNumber, result.NexoDocId, order.Id);
-            */
 
-            // === IMPLEMENTACJA SQL (tymczasowa - do testów) ===
+#else
+            // ═══════════════════════════════════════════════════════════════
+            // TRYB TESTOWY - BEZ SFERA (symulacja)
+            // ═══════════════════════════════════════════════════════════════
+            
+            _logger.LogWarning("⚠️ TRYB TESTOWY - dokument NIE zostanie utworzony w nexo!");
+            _logger.LogWarning("Aby włączyć Sfera SDK, dodaj USE_SFERA do DefineConstants w .csproj");
+            
             await Task.Delay(100, cancellationToken);
+            
             result.Success = true;
-            result.NexoDocId = $"NEXO-{order.Id}-{DateTime.Now:yyyyMMddHHmmss}";
-            result.NexoDocNumber = $"ZO/{DateTime.Now:yyyy}/{order.Id:D5}";
+            result.NexoDocId = $"TEST-{order.Id}-{DateTime.Now:yyyyMMddHHmmss}";
+            result.NexoDocNumber = $"ZK-TEST/{DateTime.Now:yyyy}/{order.Id:D5}";
 
             _logger.LogInformation(
-                "Created document {DocNumber} (ID: {DocId}) for order #{OrderId}",
-                result.NexoDocNumber, result.NexoDocId, order.Id);
+                "🧪 [TEST] Simulated ZK {DocNumber} for order #{OrderId}",
+                result.NexoDocNumber, order.Id);
+#endif
 
             return result;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to create document for order #{OrderId}", order.Id);
+            _logger.LogError(ex, "❌ Failed to create ZK for order #{OrderId}: {Error}", order.Id, ex.Message);
             result.ErrorMessage = ex.Message;
             return result;
         }

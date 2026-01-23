@@ -12,6 +12,16 @@
     <Company>PRODAUT</Company>
     <Product>IKO Nexo Bridge</Product>
     <Description>Windows Service bridging IKO Cloud API with InsERT nexo PRO</Description>
+    
+    <!-- ═══════════════════════════════════════════════════════════════════
+         TRYB PRACY SFERA SDK
+         ═══════════════════════════════════════════════════════════════════
+         
+         Odkomentuj poniższą linię ABY WŁĄCZYĆ integrację Sfera SDK:
+         (wymaga również odkomentowania ItemGroup z referencjami poniżej)
+    -->
+    <!-- <DefineConstants>USE_SFERA</DefineConstants> -->
+    
   </PropertyGroup>
 
   <ItemGroup>
@@ -40,20 +50,38 @@
     <PackageReference Include="Microsoft.Extensions.Http.Polly" Version="8.0.0" />
   </ItemGroup>
 
-  <!--
-    NOTE: InsERT Sfera SDK reference
-    The Sfera.dll and related assemblies must be obtained from InsERT
-    and placed in a 'lib' folder or referenced from InsERT installation path.
-
-    Uncomment after installing InsERT nexo PRO:
-    <ItemGroup>
-      <Reference Include="Sfera">
-        <HintPath>C:\Program Files\InsERT\nexo PRO\Sfera.dll</HintPath>
-      </Reference>
-      <Reference Include="Sfera.Model">
-        <HintPath>C:\Program Files\InsERT\nexo PRO\Sfera.Model.dll</HintPath>
-      </Reference>
-    </ItemGroup>
+  <!-- ═══════════════════════════════════════════════════════════════════
+       SFERA SDK - InsERT nexo PRO
+       ═══════════════════════════════════════════════════════════════════
+       
+       KROK 1: Znajdź lokalizację Sfera.dll na komputerze klienta.
+               Typowe ścieżki:
+               - C:\Program Files\InsERT\nexo PRO\
+               - C:\Program Files (x86)\InsERT\nexo PRO\
+               - C:\InsERT\nexo PRO\
+       
+       KROK 2: Zaktualizuj HintPath poniżej do prawidłowej ścieżki
+       
+       KROK 3: Odkomentuj sekcję <ItemGroup> oraz <DefineConstants> powyżej
+       
+       KROK 4: Zbuduj projekt: dotnet build
+  -->
+  
+  <!-- ODKOMENTUJ PO ZNALEZIENIU SFERA.DLL:
+  <ItemGroup Condition="'$(DefineConstants.Contains(USE_SFERA))' == 'true'">
+    <Reference Include="Sfera">
+      <HintPath>C:\Program Files\InsERT\nexo PRO\Sfera.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="Sfera.Model">
+      <HintPath>C:\Program Files\InsERT\nexo PRO\Sfera.Model.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="InsERT.Mox">
+      <HintPath>C:\Program Files\InsERT\nexo PRO\InsERT.Mox.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
   -->
 
 </Project>
