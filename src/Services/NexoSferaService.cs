@@ -223,6 +223,7 @@ public class NexoSferaService : IDisposable
         {
             _logger.LogInformation("Fetching products from nexo PRO");
 
+            // Pobiera TYLKO produkty z dostępnym stanem magazynowym (IloscDostepna > 0)
             var query = @"
                 SELECT
                     a.Id,
@@ -233,9 +234,13 @@ public class NexoSferaService : IDisposable
                     ISNULL(c.CenaBrutto, 0) AS PriceBrutto,
                     23 AS VatRate,
                     'szt' AS Unit,
-                    a.Symbol AS Ean
+                    a.Symbol AS Ean,
+                    ISNULL(sm.IloscDostepna, 0) AS StockQuantity
                 FROM ModelDanychContainer.Asortymenty a
                 LEFT JOIN ModelDanychContainer.WartosciCen c ON a.Id = c.Id
+                LEFT JOIN ModelDanychContainer.StanyMagazynowe sm ON a.Id = sm.Asortyment_Id
+                WHERE a.IsInRecycleBin = 0
+                  AND ISNULL(sm.IloscDostepna, 0) > 0
                 ORDER BY a.Symbol";
 
             using var command = new SqlCommand(query, _sqlConnection);
