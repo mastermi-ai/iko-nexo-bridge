@@ -6,17 +6,6 @@ using IkoNexoBridge.Models;
 
 namespace IkoNexoBridge.Services;
 
-/// <summary>
-/// Service for communication with InsERT nexo PRO via Sfera SDK
-///
-/// WYMAGANIA:
-/// 1. Zainstaluj InsERT nexo PRO na tym samym serwerze lub zapewnij dostęp sieciowy do bazy SQL Server
-/// 2. Pobierz Sfera SDK z InsERT (www.insert.com.pl) - biblioteka Sfera.dll
-/// 3. Dodaj referencję: dotnet add reference "C:\Program Files\InsERT\nexo PRO\Sfera\Sfera.dll"
-/// 4. Skonfiguruj appsettings.json z danymi połączenia do bazy nexo
-///
-/// Dokumentacja Sfera: https://www.insert.com.pl/programy_insert/sfera_dla_programistow
-/// </summary>
 public class NexoSferaService : IDisposable
 {
     private readonly ILogger<NexoSferaService> _logger;
@@ -25,10 +14,10 @@ public class NexoSferaService : IDisposable
     private bool _disposed;
     private SqlConnection? _sqlConnection;
 
-    // === SFERA SDK OBJECTS ===
-    // Odkomentuj po dodaniu referencji do Sfera.dll:
-    // private Sfera.Uchwyt? _uchwyt;
-    // private Sfera.Sesja? _sesja;
+#if USE_SFERA
+    private Sfera.Uchwyt? _uchwyt;
+    private Sfera.Sesja? _sesja;
+#endif
 
     public NexoSferaService(
         IOptions<NexoProSettings> settings,
@@ -38,9 +27,6 @@ public class NexoSferaService : IDisposable
         _logger = logger;
     }
 
-    /// <summary>
-    /// Initialize connection to nexo PRO database
-    /// </summary>
     public async Task<bool> ConnectAsync(CancellationToken cancellationToken = default)
     {
         if (_isConnected)
@@ -51,9 +37,7 @@ public class NexoSferaService : IDisposable
             _logger.LogInformation("Connecting to nexo PRO: {Server}/{Database}",
                 _settings.ServerName, _settings.DatabaseName);
 
-            // === METODA 1: Połączenie przez Sfera SDK (ZALECANE) ===
-            // Odkomentuj po dodaniu referencji do Sfera.dll:
-            /*
+#if USE_SFERA
             _uchwyt = new Sfera.Uchwyt();
 
             var parametryPolaczenia = new Sfera.ParametryPolaczenia
@@ -62,14 +46,14 @@ public class NexoSferaService : IDisposable
                 Baza = _settings.DatabaseName,
                 UzytkownikSql = _settings.Username,
                 HasloSql = _settings.Password,
-                PolaczenieZaufane = string.IsNullOrEmpty(_settings.Username) // Windows Auth jeśli brak loginu SQL
+                PolaczenieZaufane = string.IsNullOrEmpty(_settings.Username)
             };
 
             _sesja = await Task.Run(() =>
                 _uchwyt.ZalogujOperatora(
                     parametryPolaczenia,
-                    _settings.OperatorSymbol,   // np. "ADMIN"
-                    _settings.OperatorPassword), // hasło operatora nexo
+                    _settings.OperatorSymbol,
+                    _settings.OperatorPassword),
                 cancellationToken);
 
             if (_sesja == null)
@@ -79,18 +63,17 @@ public class NexoSferaService : IDisposable
             }
 
             _isConnected = true;
-            _logger.LogInformation("Successfully connected to nexo PRO via Sfera SDK");
+            _logger.LogInformation("Connected to nexo PRO via Sfera SDK");
             return true;
-            */
-
-            // === METODA 2: Bezpośrednie połączenie SQL (alternatywa) ===
+#else
             var connectionString = BuildConnectionString();
             _sqlConnection = new SqlConnection(connectionString);
             await _sqlConnection.OpenAsync(cancellationToken);
 
             _isConnected = true;
-            _logger.LogInformation("Successfully connected to nexo PRO database via SQL");
+            _logger.LogInformation("Connected to nexo PRO database");
             return true;
+#endif
         }
         catch (Exception ex)
         {
@@ -117,24 +100,12 @@ public class NexoSferaService : IDisposable
         }
         else
         {
-            builder.IntegratedSecurity = true; // Windows Authentication
+            builder.IntegratedSecurity = true;
         }
 
         return builder.ConnectionString;
     }
 
-    /// <summary>
-    /// Create order document (Zamówienie od Klienta - ZK) in nexo PRO
-    /// 
-    /// TRYBY PRACY:
-    /// 1. USE_SFERA = true  → Pełna integracja przez Sfera SDK (produkcja)
-    /// 2. USE_SFERA = false → Tryb testowy bez tworzenia dokumentów
-    /// 
-    /// Aby włączyć Sfera SDK:
-    /// 1. Znajdź Sfera.dll w instalacji nexo PRO
-    /// 2. Dodaj referencję: dotnet add reference "ścieżka/do/Sfera.dll"
-    /// 3. Zmień USE_SFERA na true w .csproj lub tutaj
-    /// </summary>
     public async Task<OrderProcessingResult> CreateOrderDocumentAsync(
         CloudOrder order,
         CancellationToken cancellationToken = default)
@@ -149,59 +120,42 @@ public class NexoSferaService : IDisposable
 
         try
         {
-            _logger.LogInformation("Creating ZK document for order #{OrderId}, Customer: {Customer}", 
-                order.Id, order.Customer?.Name ?? "NOWY KLIENT");
+            _logger.LogInformation("Creating ZK document for order #{OrderId}, Customer: {Customer}",
+                order.Id, order.Customer?.Name ?? "NEW_CUSTOMER");
 
 #if USE_SFERA
-            // ═══════════════════════════════════════════════════════════════
-            // TRYB PRODUKCYJNY - SFERA SDK
-            // ═══════════════════════════════════════════════════════════════
-            
             if (_sesja == null)
             {
                 result.ErrorMessage = "Sfera session not initialized";
                 return result;
             }
 
-            // Utwórz nowy dokument ZK (Zamówienie od Klienta)
             using var dokumentHandlowy = _sesja.DokumentyHandlowe.Utworz(
                 Sfera.Model.Enums.TypDokumentuHandlowego.ZamowienieOdKlienta);
 
-            // === KONTRAHENT ===
             if (!string.IsNullOrEmpty(order.Customer?.NexoId))
             {
-                // Istniejący klient - znajdź po ID
                 var kontrahent = _sesja.Kontrahenci.Dane
                     .FirstOrDefault(k => k.Id.ToString() == order.Customer.NexoId);
 
                 if (kontrahent != null)
                 {
                     dokumentHandlowy.Kontrahent = kontrahent;
-                    _logger.LogDebug("Set customer: {Name} (ID: {Id})", kontrahent.Nazwa, kontrahent.Id);
                 }
                 else
                 {
-                    _logger.LogWarning("Customer not found in nexo: {NexoId}, using notes", order.Customer.NexoId);
+                    _logger.LogWarning("Customer not found in nexo: {NexoId}", order.Customer.NexoId);
                 }
             }
-            else
-            {
-                // NOWY KLIENT - dane w uwagach (wymaganie klienta!)
-                _logger.LogInformation("New customer - data will be in notes");
-            }
 
-            // === DATY ===
             dokumentHandlowy.DataWystawienia = order.OrderDate;
-            dokumentHandlowy.DataRealizacji = order.OrderDate.AddDays(7); // Domyślnie +7 dni
+            dokumentHandlowy.DataRealizacji = order.OrderDate.AddDays(7);
 
-            // === UWAGI (zawierają dane nowego klienta jeśli applicable) ===
             if (!string.IsNullOrEmpty(order.Notes))
             {
                 dokumentHandlowy.Uwagi = order.Notes;
-                _logger.LogDebug("Set notes: {Notes}", order.Notes.Substring(0, Math.Min(100, order.Notes.Length)));
             }
 
-            // === POZYCJE ===
             foreach (var item in order.Items)
             {
                 var towar = _sesja.Towary.Dane
@@ -211,17 +165,12 @@ public class NexoSferaService : IDisposable
                 {
                     var pozycja = dokumentHandlowy.Pozycje.Dodaj(towar);
                     pozycja.Ilosc = item.Quantity;
-                    
-                    // Cena półkowa - nexo przeliczy rabaty automatycznie!
-                    // (wymaganie klienta: kalkulacja cen w nexo, nie w aplikacji)
                     pozycja.CenaNetto = item.PriceNetto;
 
                     if (!string.IsNullOrEmpty(item.Notes))
                     {
                         pozycja.Uwagi = item.Notes;
                     }
-
-                    _logger.LogDebug("Added item: {Code} x {Qty}", item.ProductCode, item.Quantity);
                 }
                 else
                 {
@@ -229,36 +178,24 @@ public class NexoSferaService : IDisposable
                 }
             }
 
-            // === PRZELICZ DOKUMENT (nexo oblicza rabaty!) ===
             dokumentHandlowy.Przelicz();
-
-            // === ZAPISZ ===
             dokumentHandlowy.Zapisz();
 
             result.Success = true;
             result.NexoDocId = dokumentHandlowy.Id.ToString();
             result.NexoDocNumber = dokumentHandlowy.NumerPelny;
 
-            _logger.LogInformation(
-                "✅ Created ZK {DocNumber} (ID: {DocId}) for order #{OrderId}",
-                result.NexoDocNumber, result.NexoDocId, order.Id);
-
+            _logger.LogInformation("Created ZK {DocNumber} for order #{OrderId}",
+                result.NexoDocNumber, order.Id);
 #else
-            // ═══════════════════════════════════════════════════════════════
-            // TRYB TESTOWY - BEZ SFERA (symulacja)
-            // ═══════════════════════════════════════════════════════════════
-            
-            _logger.LogWarning("⚠️ TRYB TESTOWY - dokument NIE zostanie utworzony w nexo!");
-            _logger.LogWarning("Aby włączyć Sfera SDK, dodaj USE_SFERA do DefineConstants w .csproj");
-            
+            _logger.LogWarning("TEST MODE - document will not be created in nexo");
             await Task.Delay(100, cancellationToken);
-            
+
             result.Success = true;
             result.NexoDocId = $"TEST-{order.Id}-{DateTime.Now:yyyyMMddHHmmss}";
             result.NexoDocNumber = $"ZK-TEST/{DateTime.Now:yyyy}/{order.Id:D5}";
 
-            _logger.LogInformation(
-                "🧪 [TEST] Simulated ZK {DocNumber} for order #{OrderId}",
+            _logger.LogInformation("Simulated ZK {DocNumber} for order #{OrderId}",
                 result.NexoDocNumber, order.Id);
 #endif
 
@@ -266,15 +203,12 @@ public class NexoSferaService : IDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "❌ Failed to create ZK for order #{OrderId}: {Error}", order.Id, ex.Message);
+            _logger.LogError(ex, "Failed to create ZK for order #{OrderId}", order.Id);
             result.ErrorMessage = ex.Message;
             return result;
         }
     }
 
-    /// <summary>
-    /// Get all active products from nexo PRO
-    /// </summary>
     public async Task<List<CloudProduct>> GetProductsAsync(CancellationToken cancellationToken = default)
     {
         var products = new List<CloudProduct>();
@@ -289,27 +223,6 @@ public class NexoSferaService : IDisposable
         {
             _logger.LogInformation("Fetching products from nexo PRO");
 
-            // === IMPLEMENTACJA SFERA SDK ===
-            /*
-            foreach (var towar in _sesja!.Towary.Dane.Where(t => t.Aktywny))
-            {
-                products.Add(new CloudProduct
-                {
-                    NexoId = towar.Id.ToString(),
-                    Code = towar.Symbol,
-                    Name = towar.Nazwa,
-                    Description = towar.Opis,
-                    PriceNetto = towar.CenaDetaliczna,
-                    PriceBrutto = towar.CenaDetalicznaBrutto,
-                    VatRate = towar.StawkaVat?.Stawka ?? 23,
-                    Unit = towar.JednostkaMiary?.Symbol ?? "szt",
-                    Ean = towar.EAN,
-                    Active = towar.Aktywny
-                });
-            }
-            */
-
-            // === IMPLEMENTACJA SQL (bezpośrednia) ===
             var query = @"
                 SELECT
                     t.tw_Id AS Id,
@@ -359,9 +272,6 @@ public class NexoSferaService : IDisposable
         }
     }
 
-    /// <summary>
-    /// Get all active customers from nexo PRO
-    /// </summary>
     public async Task<List<CloudCustomer>> GetCustomersAsync(CancellationToken cancellationToken = default)
     {
         var customers = new List<CloudCustomer>();
@@ -376,28 +286,6 @@ public class NexoSferaService : IDisposable
         {
             _logger.LogInformation("Fetching customers from nexo PRO");
 
-            // === IMPLEMENTACJA SFERA SDK ===
-            /*
-            foreach (var kontrahent in _sesja!.Kontrahenci.Dane.Where(k => k.Aktywny))
-            {
-                customers.Add(new CloudCustomer
-                {
-                    NexoId = kontrahent.Id.ToString(),
-                    Name = kontrahent.Nazwa,
-                    ShortName = kontrahent.NazwaSkrocona,
-                    Address = kontrahent.Adres?.Ulica,
-                    PostalCode = kontrahent.Adres?.KodPocztowy,
-                    City = kontrahent.Adres?.Miejscowosc,
-                    Phone1 = kontrahent.Telefon1,
-                    Phone2 = kontrahent.Telefon2,
-                    Email = kontrahent.Email,
-                    Nip = kontrahent.NIP,
-                    Regon = kontrahent.REGON
-                });
-            }
-            */
-
-            // === IMPLEMENTACJA SQL (bezpośrednia) ===
             var query = @"
                 SELECT
                     k.kh_Id AS Id,
@@ -448,19 +336,8 @@ public class NexoSferaService : IDisposable
         }
     }
 
-    /// <summary>
-    /// Test connection status
-    /// </summary>
     public bool IsConnected => _isConnected && (_sqlConnection?.State == System.Data.ConnectionState.Open);
 
-    // ========================================================================
-    // ROZRACHUNKI (WYMAGANIE KLIENTA)
-    // ========================================================================
-
-    /// <summary>
-    /// Pobiera saldo należności klienta z nexo PRO
-    /// Wartość dodatnia = klient jest winien firmie
-    /// </summary>
     public async Task<CustomerBalance?> GetCustomerBalanceAsync(
         string nexoId,
         CancellationToken cancellationToken = default)
@@ -473,18 +350,14 @@ public class NexoSferaService : IDisposable
 
         try
         {
-            _logger.LogDebug("Fetching balance for customer {NexoId}", nexoId);
-
-            // Query dla salda rozrachunków z nexo PRO
-            // Tabela rk__Rozrachunek zawiera należności/zobowiązania
             var query = @"
                 SELECT
                     k.kh_Id,
                     k.kh_Nazwa,
                     k.kh_LimitKredytowy AS CreditLimit,
                     ISNULL(SUM(CASE
-                        WHEN r.rk_Typ = 'N' THEN r.rk_KwotaPozostala  -- Należność
-                        WHEN r.rk_Typ = 'Z' THEN -r.rk_KwotaPozostala -- Zobowiązanie
+                        WHEN r.rk_Typ = 'N' THEN r.rk_KwotaPozostala
+                        WHEN r.rk_Typ = 'Z' THEN -r.rk_KwotaPozostala
                         ELSE 0
                     END), 0) AS Balance
                 FROM kh__Kontrahent k
@@ -520,9 +393,6 @@ public class NexoSferaService : IDisposable
         }
     }
 
-    /// <summary>
-    /// Pobiera salda wszystkich klientów (batch)
-    /// </summary>
     public async Task<List<CustomerBalance>> GetAllCustomerBalancesAsync(
         CancellationToken cancellationToken = default)
     {
@@ -579,14 +449,6 @@ public class NexoSferaService : IDisposable
         }
     }
 
-    // ========================================================================
-    // ZDJĘCIA PRODUKTÓW (WYMAGANIE KLIENTA - z cache!)
-    // ========================================================================
-
-    /// <summary>
-    /// Pobiera zdjęcie produktu z nexo PRO jako Base64
-    /// UWAGA: Klient martwi się o wydajność - używaj z cache'owaniem!
-    /// </summary>
     public async Task<ProductImage?> GetProductImageAsync(
         string nexoId,
         int maxWidth = 200,
@@ -601,10 +463,6 @@ public class NexoSferaService : IDisposable
 
         try
         {
-            _logger.LogDebug("Fetching image for product {NexoId}", nexoId);
-
-            // Zdjęcia w nexo są przechowywane w tabeli ob__Obiekt (BLOB)
-            // lub w osobnej tabeli zdjęć produktów
             var query = @"
                 SELECT
                     t.tw_Id,
@@ -626,8 +484,6 @@ public class NexoSferaService : IDisposable
 
                 if (imageData != null && imageData.Length > 0)
                 {
-                    // Dla wydajności: w produkcji użyj biblioteki do resize (np. ImageSharp)
-                    // Tu zwracamy oryginał jako base64
                     var base64 = Convert.ToBase64String(imageData);
 
                     return new ProductImage
@@ -649,9 +505,6 @@ public class NexoSferaService : IDisposable
         }
     }
 
-    /// <summary>
-    /// Pobiera listę produktów które mają zdjęcia (do sync)
-    /// </summary>
     public async Task<List<string>> GetProductsWithImagesAsync(
         CancellationToken cancellationToken = default)
     {
@@ -689,9 +542,6 @@ public class NexoSferaService : IDisposable
         }
     }
 
-    /// <summary>
-    /// Disconnect from nexo PRO
-    /// </summary>
     public void Disconnect()
     {
         if (!_isConnected)
@@ -701,11 +551,11 @@ public class NexoSferaService : IDisposable
         {
             _logger.LogInformation("Disconnecting from nexo PRO");
 
-            // Sfera SDK
-            // _sesja?.Dispose();
-            // _uchwyt?.Dispose();
+#if USE_SFERA
+            _sesja?.Dispose();
+            _uchwyt?.Dispose();
+#endif
 
-            // SQL Connection
             _sqlConnection?.Close();
             _sqlConnection?.Dispose();
             _sqlConnection = null;

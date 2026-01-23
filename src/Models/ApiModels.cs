@@ -2,9 +2,6 @@ using System.Text.Json.Serialization;
 
 namespace IkoNexoBridge.Models;
 
-/// <summary>
-/// Order from Cloud API
-/// </summary>
 public class CloudOrder
 {
     [JsonPropertyName("id")]
@@ -47,9 +44,6 @@ public class CloudOrder
     public CloudCustomer? Customer { get; set; }
 }
 
-/// <summary>
-/// Order item from Cloud API
-/// </summary>
 public class CloudOrderItem
 {
     [JsonPropertyName("id")]
@@ -86,9 +80,6 @@ public class CloudOrderItem
     public decimal Total { get; set; }
 }
 
-/// <summary>
-/// Customer from Cloud API
-/// </summary>
 public class CloudCustomer
 {
     [JsonPropertyName("id")]
@@ -125,9 +116,6 @@ public class CloudCustomer
     public string? Nip { get; set; }
 }
 
-/// <summary>
-/// Product from Cloud API
-/// </summary>
 public class CloudProduct
 {
     [JsonPropertyName("id")]
@@ -167,9 +155,6 @@ public class CloudProduct
     public bool Active { get; set; } = true;
 }
 
-/// <summary>
-/// Update order status request
-/// </summary>
 public class UpdateOrderStatusRequest
 {
     [JsonPropertyName("status")]
@@ -182,9 +167,6 @@ public class UpdateOrderStatusRequest
     public string? ErrorMessage { get; set; }
 }
 
-/// <summary>
-/// Result of order processing
-/// </summary>
 public class OrderProcessingResult
 {
     public bool Success { get; set; }
@@ -194,9 +176,6 @@ public class OrderProcessingResult
     public string? ErrorMessage { get; set; }
 }
 
-/// <summary>
-/// Sync result for products/customers
-/// </summary>
 public class SyncResult
 {
     public int ItemsProcessed { get; set; }
@@ -206,88 +185,41 @@ public class SyncResult
     public List<string> Errors { get; set; } = new();
 }
 
-// ========================================================================
-// ROZRACHUNKI (WYMAGANIE KLIENTA)
-// ========================================================================
-
-/// <summary>
-/// Saldo rozrachunków klienta z nexo PRO
-/// </summary>
 public class CustomerBalance
 {
-    /// <summary>
-    /// ID kontrahenta w nexo
-    /// </summary>
     [JsonPropertyName("nexoId")]
     public string NexoId { get; set; } = string.Empty;
 
-    /// <summary>
-    /// Saldo należności (dodatnie = klient winien, ujemne = nadpłata)
-    /// </summary>
     [JsonPropertyName("balance")]
     public decimal Balance { get; set; }
 
-    /// <summary>
-    /// Limit kredytowy kontrahenta
-    /// </summary>
     [JsonPropertyName("creditLimit")]
     public decimal? CreditLimit { get; set; }
 
-    /// <summary>
-    /// Data pobrania salda z nexo
-    /// </summary>
     [JsonPropertyName("updatedAt")]
     public DateTime UpdatedAt { get; set; }
 
-    /// <summary>
-    /// Czy klient przekroczył limit kredytowy
-    /// </summary>
     [JsonIgnore]
     public bool IsOverCreditLimit => CreditLimit.HasValue && Balance > CreditLimit.Value;
 
-    /// <summary>
-    /// Czy klient ma zaległości
-    /// </summary>
     [JsonIgnore]
     public bool HasDebt => Balance > 0;
 }
 
-// ========================================================================
-// ZDJĘCIA PRODUKTÓW (WYMAGANIE KLIENTA - z cache!)
-// ========================================================================
-
-/// <summary>
-/// Zdjęcie produktu z nexo PRO
-/// </summary>
 public class ProductImage
 {
-    /// <summary>
-    /// ID produktu w nexo
-    /// </summary>
     [JsonPropertyName("nexoId")]
     public string NexoId { get; set; } = string.Empty;
 
-    /// <summary>
-    /// Zdjęcie jako Base64 (thumbnail max 200x200px dla wydajności)
-    /// </summary>
     [JsonPropertyName("base64Data")]
     public string Base64Data { get; set; } = string.Empty;
 
-    /// <summary>
-    /// Typ MIME (image/jpeg, image/png)
-    /// </summary>
     [JsonPropertyName("mimeType")]
     public string MimeType { get; set; } = "image/jpeg";
 
-    /// <summary>
-    /// Data pobrania z nexo
-    /// </summary>
     [JsonPropertyName("fetchedAt")]
     public DateTime FetchedAt { get; set; }
 
-    /// <summary>
-    /// Zwraca pełny data URL do osadzenia w img src
-    /// </summary>
     [JsonIgnore]
     public string DataUrl => $"data:{MimeType};base64,{Base64Data}";
 }
