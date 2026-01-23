@@ -225,22 +225,18 @@ public class NexoSferaService : IDisposable
 
             var query = @"
                 SELECT
-                    t.tw_Id AS Id,
-                    t.tw_Symbol AS Code,
-                    t.tw_Nazwa AS Name,
-                    t.tw_Opis AS Description,
-                    ISNULL(c.ce_WartoscNetto, 0) AS PriceNetto,
-                    ISNULL(c.ce_WartoscBrutto, 0) AS PriceBrutto,
-                    ISNULL(sv.sv_Stawka, 23) AS VatRate,
-                    ISNULL(jm.jm_Symbol, 'szt') AS Unit,
-                    t.tw_EAN AS Ean,
-                    t.tw_Aktywny AS Active
-                FROM tw__Towar t
-                LEFT JOIN ce__Cena c ON t.tw_Id = c.ce_IdObiektu AND c.ce_IdRodzajuCeny = 1
-                LEFT JOIN sv__StawkaVat sv ON t.tw_IdStawkiVat = sv.sv_Id
-                LEFT JOIN jm__JednostkaMiary jm ON t.tw_IdJednostkiMiary = jm.jm_Id
-                WHERE t.tw_Aktywny = 1
-                ORDER BY t.tw_Symbol";
+                    a.Id,
+                    a.Symbol AS Code,
+                    a.Nazwa AS Name,
+                    a.Opis AS Description,
+                    ISNULL(c.CenaNetto, 0) AS PriceNetto,
+                    ISNULL(c.CenaBrutto, 0) AS PriceBrutto,
+                    23 AS VatRate,
+                    'szt' AS Unit,
+                    a.Symbol AS Ean
+                FROM ModelDanychContainer.Asortymenty a
+                LEFT JOIN ModelDanychContainer.WartosciCen c ON a.Id = c.Id
+                ORDER BY a.Symbol";
 
             using var command = new SqlCommand(query, _sqlConnection);
             using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -258,7 +254,7 @@ public class NexoSferaService : IDisposable
                     VatRate = Convert.ToDecimal(reader["VatRate"]),
                     Unit = reader["Unit"]?.ToString() ?? "szt",
                     Ean = reader["Ean"]?.ToString(),
-                    Active = Convert.ToBoolean(reader["Active"])
+                    Active = true
                 });
             }
 
@@ -288,22 +284,16 @@ public class NexoSferaService : IDisposable
 
             var query = @"
                 SELECT
-                    k.kh_Id AS Id,
-                    k.kh_Nazwa AS Name,
-                    k.kh_NazwaSkrocona AS ShortName,
-                    a.adr_Ulica AS Address,
-                    a.adr_KodPocztowy AS PostalCode,
-                    a.adr_Miejscowosc AS City,
-                    k.kh_Telefon1 AS Phone1,
-                    k.kh_Telefon2 AS Phone2,
-                    k.kh_Email AS Email,
-                    k.kh_NIP AS Nip,
-                    k.kh_REGON AS Regon,
-                    k.kh_Aktywny AS Active
-                FROM kh__Kontrahent k
-                LEFT JOIN adr__Adres a ON k.kh_IdAdresuPodstawowego = a.adr_Id
-                WHERE k.kh_Aktywny = 1
-                ORDER BY k.kh_Nazwa";
+                    p.Id,
+                    p.NazwaSkrocona AS Name,
+                    p.NazwaSkrocona AS ShortName,
+                    p.Telefon AS Phone1,
+                    p.NIP AS Nip,
+                    p.Aktywny AS Active,
+                    p.LimitKredytuKupieckiego AS CreditLimit
+                FROM ModelDanychContainer.Podmioty p
+                WHERE p.Aktywny = 1 AND p.Kontrahent = 1
+                ORDER BY p.NazwaSkrocona";
 
             using var command = new SqlCommand(query, _sqlConnection);
             using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -315,14 +305,8 @@ public class NexoSferaService : IDisposable
                     NexoId = reader["Id"].ToString()!,
                     Name = reader["Name"]?.ToString() ?? "",
                     ShortName = reader["ShortName"]?.ToString(),
-                    Address = reader["Address"]?.ToString(),
-                    PostalCode = reader["PostalCode"]?.ToString(),
-                    City = reader["City"]?.ToString(),
                     Phone1 = reader["Phone1"]?.ToString(),
-                    Phone2 = reader["Phone2"]?.ToString(),
-                    Email = reader["Email"]?.ToString(),
-                    Nip = reader["Nip"]?.ToString(),
-                    Regon = reader["Regon"]?.ToString()
+                    Nip = reader["Nip"]?.ToString()
                 });
             }
 
@@ -352,19 +336,12 @@ public class NexoSferaService : IDisposable
         {
             var query = @"
                 SELECT
-                    k.kh_Id,
-                    k.kh_Nazwa,
-                    k.kh_LimitKredytowy AS CreditLimit,
-                    ISNULL(SUM(CASE
-                        WHEN r.rk_Typ = 'N' THEN r.rk_KwotaPozostala
-                        WHEN r.rk_Typ = 'Z' THEN -r.rk_KwotaPozostala
-                        ELSE 0
-                    END), 0) AS Balance
-                FROM kh__Kontrahent k
-                LEFT JOIN rk__Rozrachunek r ON k.kh_Id = r.rk_IdKontrahenta
-                    AND r.rk_KwotaPozostala > 0
-                WHERE k.kh_Id = @NexoId
-                GROUP BY k.kh_Id, k.kh_Nazwa, k.kh_LimitKredytowy";
+                    p.Id,
+                    p.NazwaSkrocona,
+                    p.LimitKredytuKupieckiego AS CreditLimit,
+                    0 AS Balance
+                FROM ModelDanychContainer.Podmioty p
+                WHERE p.Id = @NexoId";
 
             using var command = new SqlCommand(query, _sqlConnection);
             command.Parameters.AddWithValue("@NexoId", int.Parse(nexoId));
@@ -410,18 +387,11 @@ public class NexoSferaService : IDisposable
 
             var query = @"
                 SELECT
-                    k.kh_Id AS NexoId,
-                    k.kh_LimitKredytowy AS CreditLimit,
-                    ISNULL(SUM(CASE
-                        WHEN r.rk_Typ = 'N' THEN r.rk_KwotaPozostala
-                        WHEN r.rk_Typ = 'Z' THEN -r.rk_KwotaPozostala
-                        ELSE 0
-                    END), 0) AS Balance
-                FROM kh__Kontrahent k
-                LEFT JOIN rk__Rozrachunek r ON k.kh_Id = r.rk_IdKontrahenta
-                    AND r.rk_KwotaPozostala > 0
-                WHERE k.kh_Aktywny = 1
-                GROUP BY k.kh_Id, k.kh_LimitKredytowy";
+                    p.Id AS NexoId,
+                    p.LimitKredytuKupieckiego AS CreditLimit,
+                    0 AS Balance
+                FROM ModelDanychContainer.Podmioty p
+                WHERE p.Aktywny = 1 AND p.Kontrahent = 1";
 
             using var command = new SqlCommand(query, _sqlConnection);
             using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -455,91 +425,15 @@ public class NexoSferaService : IDisposable
         int maxHeight = 200,
         CancellationToken cancellationToken = default)
     {
-        if (!_isConnected || _sqlConnection == null)
-        {
-            _logger.LogWarning("Cannot get product image - not connected to nexo PRO");
-            return null;
-        }
-
-        try
-        {
-            var query = @"
-                SELECT
-                    t.tw_Id,
-                    z.zdj_Dane AS ImageData,
-                    z.zdj_TypMIME AS MimeType
-                FROM tw__Towar t
-                INNER JOIN zdj__Zdjecie z ON t.tw_IdZdjeciaPodstawowego = z.zdj_Id
-                WHERE t.tw_Id = @NexoId";
-
-            using var command = new SqlCommand(query, _sqlConnection);
-            command.Parameters.AddWithValue("@NexoId", int.Parse(nexoId));
-
-            using var reader = await command.ExecuteReaderAsync(cancellationToken);
-
-            if (await reader.ReadAsync(cancellationToken))
-            {
-                var imageData = reader["ImageData"] as byte[];
-                var mimeType = reader["MimeType"]?.ToString() ?? "image/jpeg";
-
-                if (imageData != null && imageData.Length > 0)
-                {
-                    var base64 = Convert.ToBase64String(imageData);
-
-                    return new ProductImage
-                    {
-                        NexoId = nexoId,
-                        Base64Data = base64,
-                        MimeType = mimeType,
-                        FetchedAt = DateTime.UtcNow
-                    };
-                }
-            }
-
-            return null;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to fetch image for product {NexoId}", nexoId);
-            return null;
-        }
+        _logger.LogWarning("Product images not yet implemented for nexo PRO schema");
+        return null;
     }
 
     public async Task<List<string>> GetProductsWithImagesAsync(
         CancellationToken cancellationToken = default)
     {
-        var productIds = new List<string>();
-
-        if (!_isConnected || _sqlConnection == null)
-        {
-            _logger.LogWarning("Cannot check product images - not connected to nexo PRO");
-            return productIds;
-        }
-
-        try
-        {
-            var query = @"
-                SELECT t.tw_Id
-                FROM tw__Towar t
-                WHERE t.tw_IdZdjeciaPodstawowego IS NOT NULL
-                  AND t.tw_Aktywny = 1";
-
-            using var command = new SqlCommand(query, _sqlConnection);
-            using var reader = await command.ExecuteReaderAsync(cancellationToken);
-
-            while (await reader.ReadAsync(cancellationToken))
-            {
-                productIds.Add(reader["tw_Id"].ToString()!);
-            }
-
-            _logger.LogInformation("Found {Count} products with images", productIds.Count);
-            return productIds;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to check product images");
-            return productIds;
-        }
+        _logger.LogWarning("Product images not yet implemented for nexo PRO schema");
+        return new List<string>();
     }
 
     public void Disconnect()

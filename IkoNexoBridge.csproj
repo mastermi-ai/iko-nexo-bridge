@@ -12,7 +12,7 @@
     <Company>PRODAUT</Company>
     <Product>IKO Nexo Bridge</Product>
     <Description>Windows Service bridging IKO Cloud API with InsERT nexo PRO</Description>
-    
+
     <!-- Uncomment to enable Sfera SDK integration -->
     <!-- <DefineConstants>USE_SFERA</DefineConstants> -->
   </PropertyGroup>
