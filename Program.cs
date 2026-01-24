@@ -28,6 +28,8 @@ try
         builder.Configuration.GetSection(CloudApiSettings.SectionName));
     builder.Services.Configure<NexoProSettings>(
         builder.Configuration.GetSection(NexoProSettings.SectionName));
+    builder.Services.Configure<SferaProxySettings>(
+        builder.Configuration.GetSection(SferaProxySettings.SectionName));
     builder.Services.Configure<SyncSettings>(
         builder.Configuration.GetSection(SyncSettings.SectionName));
 

@@ -80,6 +80,24 @@ public class NexoProSettings
 }
 
 /// <summary>
+/// Sfera Proxy settings (for creating documents via separate .NET Framework service)
+/// </summary>
+public class SferaProxySettings
+{
+    public const string SectionName = "SferaProxy";
+
+    /// <summary>
+    /// URL of Sfera Proxy service (e.g., "http://localhost:5801")
+    /// </summary>
+    public string Url { get; set; } = "http://localhost:5801";
+
+    /// <summary>
+    /// Enable document creation via Sfera Proxy
+    /// </summary>
+    public bool Enabled { get; set; } = false;
+}
+
+/// <summary>
 /// Synchronization settings
 /// </summary>
 public class SyncSettings

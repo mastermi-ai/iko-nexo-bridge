@@ -1,4 +1,7 @@
 using System.Data.SqlClient;
+using System.Net.Http;
+using System.Text;
+using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using IkoNexoBridge.Configuration;
@@ -10,21 +13,21 @@ public class NexoSferaService : IDisposable
 {
     private readonly ILogger<NexoSferaService> _logger;
     private readonly NexoProSettings _settings;
+    private readonly SferaProxySettings _sferaProxySettings;
+    private readonly HttpClient _httpClient;
     private bool _isConnected;
     private bool _disposed;
     private SqlConnection? _sqlConnection;
 
-#if USE_SFERA
-    private Sfera.Uchwyt? _uchwyt;
-    private Sfera.Sesja? _sesja;
-#endif
-
     public NexoSferaService(
         IOptions<NexoProSettings> settings,
+        IOptions<SferaProxySettings> sferaProxySettings,
         ILogger<NexoSferaService> logger)
     {
         _settings = settings.Value;
+        _sferaProxySettings = sferaProxySettings.Value;
         _logger = logger;
+        _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
     }
 
     public async Task<bool> ConnectAsync(CancellationToken cancellationToken = default)
@@ -37,43 +40,43 @@ public class NexoSferaService : IDisposable
             _logger.LogInformation("Connecting to nexo PRO: {Server}/{Database}",
                 _settings.ServerName, _settings.DatabaseName);
 
-#if USE_SFERA
-            _uchwyt = new Sfera.Uchwyt();
-
-            var parametryPolaczenia = new Sfera.ParametryPolaczenia
-            {
-                Serwer = _settings.ServerName,
-                Baza = _settings.DatabaseName,
-                UzytkownikSql = _settings.Username,
-                HasloSql = _settings.Password,
-                PolaczenieZaufane = string.IsNullOrEmpty(_settings.Username)
-            };
-
-            _sesja = await Task.Run(() =>
-                _uchwyt.ZalogujOperatora(
-                    parametryPolaczenia,
-                    _settings.OperatorSymbol,
-                    _settings.OperatorPassword),
-                cancellationToken);
-
-            if (_sesja == null)
-            {
-                _logger.LogError("Failed to login to nexo PRO - invalid operator credentials");
-                return false;
-            }
-
-            _isConnected = true;
-            _logger.LogInformation("Connected to nexo PRO via Sfera SDK");
-            return true;
-#else
+            // Połączenie SQL do odczytu danych (produkty, klienci)
             var connectionString = BuildConnectionString();
             _sqlConnection = new SqlConnection(connectionString);
             await _sqlConnection.OpenAsync(cancellationToken);
 
             _isConnected = true;
-            _logger.LogInformation("Connected to nexo PRO database");
+            _logger.LogInformation("Connected to nexo PRO database (SQL)");
+
+            // Sprawdź czy Sfera Proxy jest dostępne
+            if (_sferaProxySettings.Enabled)
+            {
+                try
+                {
+                    var healthUrl = $"{_sferaProxySettings.Url}/health";
+                    var response = await _httpClient.GetAsync(healthUrl, cancellationToken);
+                    if (response.IsSuccessStatusCode)
+                    {
+                        _logger.LogInformation("Sfera Proxy is available at {Url}", _sferaProxySettings.Url);
+                    }
+                    else
+                    {
+                        _logger.LogWarning("Sfera Proxy returned {StatusCode} - documents creation may fail",
+                            response.StatusCode);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning("Sfera Proxy not available at {Url}: {Error}",
+                        _sferaProxySettings.Url, ex.Message);
+                }
+            }
+            else
+            {
+                _logger.LogWarning("Sfera Proxy is DISABLED - documents will NOT be created in nexo PRO");
+            }
+
             return true;
-#endif
         }
         catch (Exception ex)
         {
@@ -123,72 +126,14 @@ public class NexoSferaService : IDisposable
             _logger.LogInformation("Creating ZK document for order #{OrderId}, Customer: {Customer}",
                 order.Id, order.Customer?.Name ?? "NEW_CUSTOMER");
 
-#if USE_SFERA
-            if (_sesja == null)
+            // Jeśli Sfera Proxy jest włączone, użyj go do tworzenia dokumentu
+            if (_sferaProxySettings.Enabled)
             {
-                result.ErrorMessage = "Sfera session not initialized";
-                return result;
+                return await CreateOrderViaSferaProxyAsync(order, cancellationToken);
             }
 
-            using var dokumentHandlowy = _sesja.DokumentyHandlowe.Utworz(
-                Sfera.Model.Enums.TypDokumentuHandlowego.ZamowienieOdKlienta);
-
-            if (!string.IsNullOrEmpty(order.Customer?.NexoId))
-            {
-                var kontrahent = _sesja.Kontrahenci.Dane
-                    .FirstOrDefault(k => k.Id.ToString() == order.Customer.NexoId);
-
-                if (kontrahent != null)
-                {
-                    dokumentHandlowy.Kontrahent = kontrahent;
-                }
-                else
-                {
-                    _logger.LogWarning("Customer not found in nexo: {NexoId}", order.Customer.NexoId);
-                }
-            }
-
-            dokumentHandlowy.DataWystawienia = order.OrderDate;
-            dokumentHandlowy.DataRealizacji = order.OrderDate.AddDays(7);
-
-            if (!string.IsNullOrEmpty(order.Notes))
-            {
-                dokumentHandlowy.Uwagi = order.Notes;
-            }
-
-            foreach (var item in order.Items)
-            {
-                var towar = _sesja.Towary.Dane
-                    .FirstOrDefault(t => t.Symbol == item.ProductCode);
-
-                if (towar != null)
-                {
-                    var pozycja = dokumentHandlowy.Pozycje.Dodaj(towar);
-                    pozycja.Ilosc = item.Quantity;
-                    pozycja.CenaNetto = item.PriceNetto;
-
-                    if (!string.IsNullOrEmpty(item.Notes))
-                    {
-                        pozycja.Uwagi = item.Notes;
-                    }
-                }
-                else
-                {
-                    _logger.LogWarning("Product not found in nexo: {ProductCode}", item.ProductCode);
-                }
-            }
-
-            dokumentHandlowy.Przelicz();
-            dokumentHandlowy.Zapisz();
-
-            result.Success = true;
-            result.NexoDocId = dokumentHandlowy.Id.ToString();
-            result.NexoDocNumber = dokumentHandlowy.NumerPelny;
-
-            _logger.LogInformation("Created ZK {DocNumber} for order #{OrderId}",
-                result.NexoDocNumber, order.Id);
-#else
-            _logger.LogWarning("TEST MODE - document will not be created in nexo");
+            // Tryb testowy - bez Sfery
+            _logger.LogWarning("SFERA PROXY DISABLED - document will not be created in nexo");
             await Task.Delay(100, cancellationToken);
 
             result.Success = true;
@@ -197,7 +142,6 @@ public class NexoSferaService : IDisposable
 
             _logger.LogInformation("Simulated ZK {DocNumber} for order #{OrderId}",
                 result.NexoDocNumber, order.Id);
-#endif
 
             return result;
         }
@@ -207,6 +151,93 @@ public class NexoSferaService : IDisposable
             result.ErrorMessage = ex.Message;
             return result;
         }
+    }
+
+    private async Task<OrderProcessingResult> CreateOrderViaSferaProxyAsync(
+        CloudOrder order,
+        CancellationToken cancellationToken)
+    {
+        var result = new OrderProcessingResult { OrderId = order.Id };
+
+        try
+        {
+            var requestBody = new
+            {
+                OrderId = order.Id,
+                CustomerNexoId = order.Customer?.NexoId,
+                CustomerName = order.Customer?.Name,
+                Notes = order.Notes,
+                Items = order.Items.Select(i => new
+                {
+                    ProductCode = i.ProductCode,
+                    ProductName = i.ProductName,
+                    Quantity = i.Quantity,
+                    PriceNetto = i.PriceNetto,
+                    PriceBrutto = i.PriceBrutto,
+                    Notes = i.Notes
+                }).ToArray()
+            };
+
+            var json = JsonSerializer.Serialize(requestBody);
+            var content = new StringContent(json, Encoding.UTF8, "application/json");
+
+            var url = $"{_sferaProxySettings.Url}/create-zk";
+            _logger.LogDebug("Sending request to Sfera Proxy: {Url}", url);
+
+            var response = await _httpClient.PostAsync(url, content, cancellationToken);
+            var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+
+            _logger.LogDebug("Sfera Proxy response: {StatusCode} - {Body}",
+                response.StatusCode, responseBody);
+
+            if (response.IsSuccessStatusCode)
+            {
+                var proxyResult = JsonSerializer.Deserialize<SferaProxyResponse>(responseBody,
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+                if (proxyResult?.Success == true)
+                {
+                    result.Success = true;
+                    result.NexoDocId = proxyResult.DocumentId;
+                    result.NexoDocNumber = proxyResult.DocumentNumber;
+
+                    _logger.LogInformation("Created ZK {DocNumber} via Sfera Proxy for order #{OrderId}",
+                        result.NexoDocNumber, order.Id);
+                }
+                else
+                {
+                    result.ErrorMessage = proxyResult?.ErrorMessage ?? "Unknown error from Sfera Proxy";
+                    _logger.LogError("Sfera Proxy error: {Error}", result.ErrorMessage);
+                }
+            }
+            else
+            {
+                result.ErrorMessage = $"Sfera Proxy HTTP error: {response.StatusCode}";
+                _logger.LogError("Sfera Proxy HTTP error: {StatusCode} - {Body}",
+                    response.StatusCode, responseBody);
+            }
+        }
+        catch (HttpRequestException ex)
+        {
+            result.ErrorMessage = $"Cannot connect to Sfera Proxy: {ex.Message}";
+            _logger.LogError(ex, "Cannot connect to Sfera Proxy at {Url}", _sferaProxySettings.Url);
+        }
+        catch (Exception ex)
+        {
+            result.ErrorMessage = ex.Message;
+            _logger.LogError(ex, "Error calling Sfera Proxy");
+        }
+
+        return result;
+    }
+
+    private class SferaProxyResponse
+    {
+        public bool Success { get; set; }
+        public int OrderId { get; set; }
+        public string? DocumentId { get; set; }
+        public string? DocumentNumber { get; set; }
+        public string? ErrorMessage { get; set; }
     }
 
     public async Task<List<CloudProduct>> GetProductsAsync(CancellationToken cancellationToken = default)
@@ -449,11 +480,6 @@ public class NexoSferaService : IDisposable
         try
         {
             _logger.LogInformation("Disconnecting from nexo PRO");
-
-#if USE_SFERA
-            _sesja?.Dispose();
-            _uchwyt?.Dispose();
-#endif
 
             _sqlConnection?.Close();
             _sqlConnection?.Dispose();
