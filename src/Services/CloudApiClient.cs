@@ -43,9 +43,9 @@ public class CloudApiClient
     {
         try
         {
-            _logger.LogDebug("Fetching pending orders from Cloud API");
+            _logger.LogDebug("Fetching pending orders from Cloud API for client {ClientId}", _settings.ClientId);
 
-            var response = await _httpClient.GetAsync("/bridge/orders/pending", cancellationToken);
+            var response = await _httpClient.GetAsync($"/bridge/orders/pending?client_id={_settings.ClientId}", cancellationToken);
             response.EnsureSuccessStatusCode();
 
             var orders = await response.Content.ReadFromJsonAsync<List<CloudOrder>>(JsonOptions, cancellationToken);
@@ -134,11 +134,12 @@ public class CloudApiClient
     {
         try
         {
-            _logger.LogInformation("Syncing {Count} products to Cloud API", products.Count);
+            _logger.LogInformation("Syncing {Count} products to Cloud API for client {ClientId}", products.Count, _settings.ClientId);
 
+            var payload = new { client_id = _settings.ClientId, products };
             var response = await _httpClient.PostAsJsonAsync(
                 "/bridge/sync/products",
-                products,
+                payload,
                 JsonOptions,
                 cancellationToken);
 
@@ -168,11 +169,12 @@ public class CloudApiClient
     {
         try
         {
-            _logger.LogInformation("Syncing {Count} customers to Cloud API", customers.Count);
+            _logger.LogInformation("Syncing {Count} customers to Cloud API for client {ClientId}", customers.Count, _settings.ClientId);
 
+            var payload = new { client_id = _settings.ClientId, customers };
             var response = await _httpClient.PostAsJsonAsync(
                 "/bridge/sync/customers",
-                customers,
+                payload,
                 JsonOptions,
                 cancellationToken);
 

@@ -119,10 +119,19 @@ public class OrderProcessingWorker : BackgroundService
 
             _logger.LogInformation("Processing {Count} pending orders", pendingOrders.Count);
 
-            foreach (var order in pendingOrders)
+            for (int i = 0; i < pendingOrders.Count; i++)
             {
                 if (cancellationToken.IsCancellationRequested)
                     break;
+
+                var order = pendingOrders[i];
+
+                // Add delay between orders to prevent overwhelming Sfera Proxy
+                if (i > 0)
+                {
+                    _logger.LogDebug("Waiting 3 seconds before processing next order...");
+                    await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken);
+                }
 
                 await ProcessSingleOrderAsync(order, cancellationToken);
             }

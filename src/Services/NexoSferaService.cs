@@ -19,6 +19,15 @@ public class NexoSferaService : IDisposable
     private bool _disposed;
     private SqlConnection? _sqlConnection;
 
+    // Retry settings
+    private const int MaxRetries = 3;
+    private static readonly TimeSpan[] RetryDelays = new[]
+    {
+        TimeSpan.FromSeconds(2),
+        TimeSpan.FromSeconds(5),
+        TimeSpan.FromSeconds(10)
+    };
+
     public NexoSferaService(
         IOptions<NexoProSettings> settings,
         IOptions<SferaProxySettings> sferaProxySettings,
@@ -27,7 +36,8 @@ public class NexoSferaService : IDisposable
         _settings = settings.Value;
         _sferaProxySettings = sferaProxySettings.Value;
         _logger = logger;
-        _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
+        // Increased timeout to handle Sfera SDK processing time
+        _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(120) };
     }
 
     public async Task<bool> ConnectAsync(CancellationToken cancellationToken = default)
@@ -158,75 +168,121 @@ public class NexoSferaService : IDisposable
         CancellationToken cancellationToken)
     {
         var result = new OrderProcessingResult { OrderId = order.Id };
+        Exception? lastException = null;
 
-        try
+        var requestBody = new
         {
-            var requestBody = new
+            OrderId = order.Id,
+            CustomerNexoId = order.Customer?.NexoId,
+            CustomerName = order.Customer?.Name,
+            Notes = order.Notes,
+            Items = order.Items.Select(i => new
             {
-                OrderId = order.Id,
-                CustomerNexoId = order.Customer?.NexoId,
-                CustomerName = order.Customer?.Name,
-                Notes = order.Notes,
-                Items = order.Items.Select(i => new
-                {
-                    ProductCode = i.ProductCode,
-                    ProductName = i.ProductName,
-                    Quantity = i.Quantity,
-                    PriceNetto = i.PriceNetto,
-                    PriceBrutto = i.PriceBrutto,
-                    Notes = i.Notes
-                }).ToArray()
-            };
+                ProductCode = i.ProductCode,
+                ProductName = i.ProductName,
+                Quantity = i.Quantity,
+                PriceNetto = i.PriceNetto,
+                PriceBrutto = i.PriceBrutto,
+                Notes = i.Notes
+            }).ToArray()
+        };
 
-            var json = JsonSerializer.Serialize(requestBody);
-            var content = new StringContent(json, Encoding.UTF8, "application/json");
+        var json = JsonSerializer.Serialize(requestBody);
+        var url = $"{_sferaProxySettings.Url}/create-zk";
 
-            var url = $"{_sferaProxySettings.Url}/create-zk";
-            _logger.LogDebug("Sending request to Sfera Proxy: {Url}", url);
+        // Retry loop with exponential backoff
+        for (int attempt = 0; attempt <= MaxRetries; attempt++)
+        {
+            if (cancellationToken.IsCancellationRequested)
+                break;
 
-            var response = await _httpClient.PostAsync(url, content, cancellationToken);
-            var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
-
-            _logger.LogDebug("Sfera Proxy response: {StatusCode} - {Body}",
-                response.StatusCode, responseBody);
-
-            if (response.IsSuccessStatusCode)
+            try
             {
-                var proxyResult = JsonSerializer.Deserialize<SferaProxyResponse>(responseBody,
-                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-
-                if (proxyResult?.Success == true)
+                if (attempt > 0)
                 {
-                    result.Success = true;
-                    result.NexoDocId = proxyResult.DocumentId;
-                    result.NexoDocNumber = proxyResult.DocumentNumber;
+                    var delay = RetryDelays[Math.Min(attempt - 1, RetryDelays.Length - 1)];
+                    _logger.LogWarning("Retry {Attempt}/{MaxRetries} for order #{OrderId} after {Delay}s delay",
+                        attempt, MaxRetries, order.Id, delay.TotalSeconds);
+                    await Task.Delay(delay, cancellationToken);
+                }
 
-                    _logger.LogInformation("Created ZK {DocNumber} via Sfera Proxy for order #{OrderId}",
-                        result.NexoDocNumber, order.Id);
+                var content = new StringContent(json, Encoding.UTF8, "application/json");
+
+                _logger.LogDebug("Sending request to Sfera Proxy: {Url} (attempt {Attempt})",
+                    url, attempt + 1);
+
+                var response = await _httpClient.PostAsync(url, content, cancellationToken);
+                var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+
+                _logger.LogDebug("Sfera Proxy response: {StatusCode} - {Body}",
+                    response.StatusCode, responseBody);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    var proxyResult = JsonSerializer.Deserialize<SferaProxyResponse>(responseBody,
+                        new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+                    if (proxyResult?.Success == true)
+                    {
+                        result.Success = true;
+                        result.NexoDocId = proxyResult.DocumentId;
+                        result.NexoDocNumber = proxyResult.DocumentNumber;
+
+                        _logger.LogInformation("Created ZK {DocNumber} via Sfera Proxy for order #{OrderId} (attempt {Attempt})",
+                            result.NexoDocNumber, order.Id, attempt + 1);
+
+                        return result; // Success - exit immediately
+                    }
+                    else
+                    {
+                        // Sfera returned error - don't retry business logic errors
+                        result.ErrorMessage = proxyResult?.ErrorMessage ?? "Unknown error from Sfera Proxy";
+                        _logger.LogError("Sfera Proxy error: {Error}", result.ErrorMessage);
+                        return result;
+                    }
+                }
+                else if ((int)response.StatusCode >= 500)
+                {
+                    // Server error - retry
+                    lastException = new HttpRequestException($"HTTP {response.StatusCode}");
+                    _logger.LogWarning("Sfera Proxy server error {StatusCode}, will retry...", response.StatusCode);
+                    continue;
                 }
                 else
                 {
-                    result.ErrorMessage = proxyResult?.ErrorMessage ?? "Unknown error from Sfera Proxy";
-                    _logger.LogError("Sfera Proxy error: {Error}", result.ErrorMessage);
+                    // Client error - don't retry
+                    result.ErrorMessage = $"Sfera Proxy HTTP error: {response.StatusCode}";
+                    _logger.LogError("Sfera Proxy HTTP error: {StatusCode} - {Body}",
+                        response.StatusCode, responseBody);
+                    return result;
                 }
             }
-            else
+            catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
             {
-                result.ErrorMessage = $"Sfera Proxy HTTP error: {response.StatusCode}";
-                _logger.LogError("Sfera Proxy HTTP error: {StatusCode} - {Body}",
-                    response.StatusCode, responseBody);
+                // Timeout - retry
+                lastException = ex;
+                _logger.LogWarning("Sfera Proxy timeout for order #{OrderId}, will retry...", order.Id);
+                continue;
+            }
+            catch (HttpRequestException ex)
+            {
+                // Connection error - retry
+                lastException = ex;
+                _logger.LogWarning("Cannot connect to Sfera Proxy: {Error}, will retry...", ex.Message);
+                continue;
+            }
+            catch (Exception ex)
+            {
+                // Other error - don't retry
+                result.ErrorMessage = ex.Message;
+                _logger.LogError(ex, "Error calling Sfera Proxy");
+                return result;
             }
         }
-        catch (HttpRequestException ex)
-        {
-            result.ErrorMessage = $"Cannot connect to Sfera Proxy: {ex.Message}";
-            _logger.LogError(ex, "Cannot connect to Sfera Proxy at {Url}", _sferaProxySettings.Url);
-        }
-        catch (Exception ex)
-        {
-            result.ErrorMessage = ex.Message;
-            _logger.LogError(ex, "Error calling Sfera Proxy");
-        }
+
+        // All retries failed
+        result.ErrorMessage = $"Failed after {MaxRetries + 1} attempts: {lastException?.Message ?? "Unknown error"}";
+        _logger.LogError("Order #{OrderId} failed after all retries: {Error}", order.Id, result.ErrorMessage);
 
         return result;
     }
@@ -252,9 +308,9 @@ public class NexoSferaService : IDisposable
 
         try
         {
-            _logger.LogInformation("Fetching products from nexo PRO");
+            _logger.LogInformation("Fetching products with images from nexo PRO");
 
-            // Pobiera TYLKO produkty z dostępnym stanem magazynowym (IloscDostepna > 0)
+            // Pobiera produkty z dostępnym stanem + zdjęcia z galerii
             var query = @"
                 SELECT
                     a.Id,
@@ -266,19 +322,39 @@ public class NexoSferaService : IDisposable
                     23 AS VatRate,
                     'szt' AS Unit,
                     a.Symbol AS Ean,
-                    ISNULL(sm.IloscDostepna, 0) AS StockQuantity
+                    ISNULL(sm.IloscDostepna, 0) AS StockQuantity,
+                    m.Dane AS ThumbnailData,
+                    m.Typ AS ImageType
                 FROM ModelDanychContainer.Asortymenty a
                 LEFT JOIN ModelDanychContainer.WartosciCen c ON a.Id = c.Id
                 LEFT JOIN ModelDanychContainer.StanyMagazynowe sm ON a.Id = sm.Asortyment_Id
+                LEFT JOIN ModelDanychContainer.MediaDokumentElementy_MediaDokumentElement_Asortyment mda ON a.Id = mda.Obiekt_Id
+                LEFT JOIN ModelDanychContainer.MediaDokumentElementy mde ON mda.Id = mde.Id
+                LEFT JOIN ModelDanychContainer.DokumentyDane_MediaDokument md ON mde.MediaDokument_Id = md.Id
+                LEFT JOIN ModelDanychContainer.Miniatury m ON md.Id = m.MediaDokument_Id
                 WHERE a.IsInRecycleBin = 0
                   AND ISNULL(sm.IloscDostepna, 0) > 0
                 ORDER BY a.Symbol";
 
             using var command = new SqlCommand(query, _sqlConnection);
+            command.CommandTimeout = 120; // 2 minuty na duże zapytanie ze zdjęciami
             using var reader = await command.ExecuteReaderAsync(cancellationToken);
 
+            int imagesCount = 0;
             while (await reader.ReadAsync(cancellationToken))
             {
+                string? thumbnailBase64 = null;
+                string? imageType = null;
+
+                // Konwertuj dane binarne na base64
+                if (reader["ThumbnailData"] != DBNull.Value)
+                {
+                    var imageBytes = (byte[])reader["ThumbnailData"];
+                    thumbnailBase64 = Convert.ToBase64String(imageBytes);
+                    imageType = reader["ImageType"]?.ToString() ?? "jpg";
+                    imagesCount++;
+                }
+
                 products.Add(new CloudProduct
                 {
                     NexoId = reader["Id"].ToString()!,
@@ -290,11 +366,14 @@ public class NexoSferaService : IDisposable
                     VatRate = Convert.ToDecimal(reader["VatRate"]),
                     Unit = reader["Unit"]?.ToString() ?? "szt",
                     Ean = reader["Ean"]?.ToString(),
-                    Active = true
+                    Active = true,
+                    ThumbnailBase64 = thumbnailBase64,
+                    ImageType = imageType
                 });
             }
 
-            _logger.LogInformation("Fetched {Count} products from nexo PRO", products.Count);
+            _logger.LogInformation("Fetched {Count} products ({ImagesCount} with images) from nexo PRO", 
+                products.Count, imagesCount);
             return products;
         }
         catch (Exception ex)

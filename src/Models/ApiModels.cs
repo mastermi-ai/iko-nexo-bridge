@@ -153,6 +153,12 @@ public class CloudProduct
 
     [JsonPropertyName("active")]
     public bool Active { get; set; } = true;
+
+    [JsonPropertyName("thumbnailBase64")]
+    public string? ThumbnailBase64 { get; set; }
+
+    [JsonPropertyName("imageType")]
+    public string? ImageType { get; set; }
 }
 
 public class UpdateOrderStatusRequest

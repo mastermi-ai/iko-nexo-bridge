@@ -9,6 +9,7 @@ public class CloudApiSettings
 
     public string BaseUrl { get; set; } = "http://localhost:3000";
     public string ApiKey { get; set; } = string.Empty;
+    public int ClientId { get; set; } = 1;
     public int PollingIntervalSeconds { get; set; } = 30;
     public int RequestTimeoutSeconds { get; set; } = 30;
     public int MaxRetryAttempts { get; set; } = 3;
