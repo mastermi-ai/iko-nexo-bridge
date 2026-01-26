@@ -19,6 +19,7 @@ public class OrderProcessingWorker : BackgroundService
 
     private DateTime _lastProductSync = DateTime.MinValue;
     private DateTime _lastCustomerSync = DateTime.MinValue;
+    private DateTime _lastOrderHistorySync = DateTime.MinValue;
 
     public OrderProcessingWorker(
         ILogger<OrderProcessingWorker> logger,
@@ -67,6 +68,12 @@ public class OrderProcessingWorker : BackgroundService
                 if (_syncSettings.SyncCustomersEnabled && ShouldSyncCustomers())
                 {
                     await SyncCustomersAsync(stoppingToken);
+                }
+
+                // Sync order history from nexo to cloud (periodic, every 60 minutes)
+                if (ShouldSyncOrderHistory())
+                {
+                    await SyncOrderHistoryAsync(stoppingToken);
                 }
             }
             catch (Exception ex)
@@ -258,6 +265,44 @@ public class OrderProcessingWorker : BackgroundService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error syncing customers");
+        }
+    }
+
+    private bool ShouldSyncOrderHistory()
+    {
+        var elapsed = DateTime.UtcNow - _lastOrderHistorySync;
+        // Sync order history every 60 minutes
+        return elapsed.TotalMinutes >= 60;
+    }
+
+    private async Task SyncOrderHistoryAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            _logger.LogInformation("Starting order history sync from nexo PRO to Cloud API");
+
+            // Fetch order history from last 365 days
+            var documents = await _nexoService.GetOrderHistoryAsync(365, cancellationToken);
+
+            if (documents.Count > 0)
+            {
+                var success = await _cloudApi.SyncOrderHistoryToCloudAsync(documents, cancellationToken);
+
+                if (success)
+                {
+                    _logger.LogInformation("Successfully synced {Count} order history documents", documents.Count);
+                }
+            }
+            else
+            {
+                _logger.LogInformation("No order history documents to sync");
+            }
+
+            _lastOrderHistorySync = DateTime.UtcNow;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error syncing order history");
         }
     }
 

@@ -551,6 +551,73 @@ public class NexoSferaService : IDisposable
         return new List<string>();
     }
 
+    /// <summary>
+    /// Pobiera historię dokumentów sprzedaży (FS, PA, WZ) dla wszystkich kontrahentów
+    /// </summary>
+    public async Task<List<OrderHistoryDocument>> GetOrderHistoryAsync(
+        int daysBack = 365,
+        CancellationToken cancellationToken = default)
+    {
+        var documents = new List<OrderHistoryDocument>();
+
+        if (!_isConnected || _sqlConnection == null)
+        {
+            _logger.LogWarning("Cannot get order history - not connected to nexo PRO");
+            return documents;
+        }
+
+        try
+        {
+            _logger.LogInformation("Fetching order history from nexo PRO (last {Days} days)", daysBack);
+
+            // Pobiera dokumenty sprzedaży: FS (Faktura), PA (Paragon), WZ (Wydanie), FP (Faktura proforma)
+            var query = @"
+                SELECT 
+                    d.Id AS NexoDocId,
+                    d.Podmiot_Id AS NexoCustomerId,
+                    d.NumerWewnetrzny AS DocumentNumber,
+                    dt.Symbol AS DocumentType,
+                    d.DataWystawienia AS DocumentDate,
+                    ISNULL(d.WartoscNetto, 0) AS TotalNetto,
+                    ISNULL(d.WartoscBrutto, 0) AS TotalBrutto
+                FROM ModelDanychContainer.Dokumenty d
+                INNER JOIN ModelDanychContainer.DefinicjeDokumentow dt ON d.DefinicjaDokumentu_Id = dt.Id
+                WHERE d.Podmiot_Id IS NOT NULL
+                  AND d.IsInRecycleBin = 0
+                  AND dt.Symbol IN ('FS', 'PA', 'WZ', 'FP')
+                  AND d.DataWystawienia >= DATEADD(day, -@DaysBack, GETDATE())
+                ORDER BY d.DataWystawienia DESC";
+
+            using var command = new SqlCommand(query, _sqlConnection);
+            command.Parameters.AddWithValue("@DaysBack", daysBack);
+            command.CommandTimeout = 120;
+
+            using var reader = await command.ExecuteReaderAsync(cancellationToken);
+
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                documents.Add(new OrderHistoryDocument
+                {
+                    NexoDocId = reader["NexoDocId"].ToString()!,
+                    NexoCustomerId = reader["NexoCustomerId"].ToString()!,
+                    DocumentNumber = reader["DocumentNumber"]?.ToString() ?? "",
+                    DocumentType = reader["DocumentType"]?.ToString() ?? "",
+                    DocumentDate = Convert.ToDateTime(reader["DocumentDate"]),
+                    TotalNetto = Convert.ToDecimal(reader["TotalNetto"]),
+                    TotalBrutto = Convert.ToDecimal(reader["TotalBrutto"])
+                });
+            }
+
+            _logger.LogInformation("Fetched {Count} order history documents from nexo PRO", documents.Count);
+            return documents;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to fetch order history from nexo PRO");
+            return documents;
+        }
+    }
+
     public void Disconnect()
     {
         if (!_isConnected)

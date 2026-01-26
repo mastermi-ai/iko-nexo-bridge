@@ -229,3 +229,27 @@ public class ProductImage
     [JsonIgnore]
     public string DataUrl => $"data:{MimeType};base64,{Base64Data}";
 }
+
+public class OrderHistoryDocument
+{
+    [JsonPropertyName("nexoDocId")]
+    public string NexoDocId { get; set; } = string.Empty;
+
+    [JsonPropertyName("nexoCustomerId")]
+    public string NexoCustomerId { get; set; } = string.Empty;
+
+    [JsonPropertyName("documentNumber")]
+    public string DocumentNumber { get; set; } = string.Empty;
+
+    [JsonPropertyName("documentType")]
+    public string DocumentType { get; set; } = string.Empty;
+
+    [JsonPropertyName("documentDate")]
+    public DateTime DocumentDate { get; set; }
+
+    [JsonPropertyName("totalNetto")]
+    public decimal TotalNetto { get; set; }
+
+    [JsonPropertyName("totalBrutto")]
+    public decimal TotalBrutto { get; set; }
+}

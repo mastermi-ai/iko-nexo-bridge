@@ -210,4 +210,40 @@ public class CloudApiClient
             return false;
         }
     }
+
+    /// <summary>
+    /// Sync order history from nexo to Cloud API
+    /// </summary>
+    public async Task<bool> SyncOrderHistoryToCloudAsync(
+        List<OrderHistoryDocument> documents,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            _logger.LogInformation("Syncing {Count} order history documents to Cloud API for client {ClientId}", 
+                documents.Count, _settings.ClientId);
+
+            var payload = new { client_id = _settings.ClientId, documents };
+            var response = await _httpClient.PostAsJsonAsync(
+                "/bridge/sync/order-history",
+                payload,
+                JsonOptions,
+                cancellationToken);
+
+            if (response.IsSuccessStatusCode)
+            {
+                _logger.LogInformation("Successfully synced {Count} order history documents", documents.Count);
+                return true;
+            }
+
+            var error = await response.Content.ReadAsStringAsync(cancellationToken);
+            _logger.LogWarning("Failed to sync order history: {Error}", error);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error syncing order history to Cloud API");
+            return false;
+        }
+    }
 }
