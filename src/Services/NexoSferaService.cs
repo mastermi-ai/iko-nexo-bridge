@@ -570,23 +570,22 @@ public class NexoSferaService : IDisposable
         {
             _logger.LogInformation("Fetching order history from nexo PRO (last {Days} days)", daysBack);
 
-            // Pobiera dokumenty sprzedaży: FS (Faktura), PA (Paragon), WZ (Wydanie), FP (Faktura proforma)
+            // Pobiera dokumenty sprzedaży: FS (Faktura), PA (Paragon), WZ (Wydanie), FP (Faktura proforma), ZK (Zamówienie)
+            // Używamy poprawnych nazw kolumn z nexo PRO
             var query = @"
                 SELECT 
                     d.Id AS NexoDocId,
-                    d.Podmiot_Id AS NexoCustomerId,
-                    d.NumerWewnetrzny AS DocumentNumber,
-                    dt.Symbol AS DocumentType,
-                    d.DataWystawienia AS DocumentDate,
-                    ISNULL(d.WartoscNetto, 0) AS TotalNetto,
-                    ISNULL(d.WartoscBrutto, 0) AS TotalBrutto
+                    d.PodmiotId AS NexoCustomerId,
+                    ISNULL(d.NumerWewnetrzny_PelnaSygnatura, d.Symbol + ' ' + CAST(d.Id AS VARCHAR)) AS DocumentNumber,
+                    d.Symbol AS DocumentType,
+                    ISNULL(d.DataSprzedazy, d.DataWydaniaWystawienia) AS DocumentDate,
+                    ISNULL(d.Wartosc_NettoPoRabacie, 0) AS TotalNetto,
+                    ISNULL(d.Wartosc_BruttoPoRabacie, 0) AS TotalBrutto
                 FROM ModelDanychContainer.Dokumenty d
-                INNER JOIN ModelDanychContainer.DefinicjeDokumentow dt ON d.DefinicjaDokumentu_Id = dt.Id
-                WHERE d.Podmiot_Id IS NOT NULL
-                  AND d.IsInRecycleBin = 0
-                  AND dt.Symbol IN ('FS', 'PA', 'WZ', 'FP')
-                  AND d.DataWystawienia >= DATEADD(day, -@DaysBack, GETDATE())
-                ORDER BY d.DataWystawienia DESC";
+                WHERE d.PodmiotId IS NOT NULL
+                  AND d.Symbol IN ('FS', 'PA', 'WZ', 'FP', 'ZK')
+                  AND ISNULL(d.DataSprzedazy, d.DataWydaniaWystawienia) >= DATEADD(day, -@DaysBack, GETDATE())
+                ORDER BY ISNULL(d.DataSprzedazy, d.DataWydaniaWystawienia) DESC";
 
             using var command = new SqlCommand(query, _sqlConnection);
             command.Parameters.AddWithValue("@DaysBack", daysBack);
